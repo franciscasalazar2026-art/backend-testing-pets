@@ -10,7 +10,9 @@ from app.pets.models import PetModel
 pytestmark = pytest.mark.e2e
 
 
-def create_pet(client, student_id: str, payload: dict[str, object]) -> dict[str, object]:
+def create_pet(
+    client, student_id: str, payload: dict[str, object]
+) -> dict[str, object]:
     response = client.post(f"/api/students/{student_id}/pets", json=payload)
     assert response.status_code == 201, response.text
     return response.json()["data"]
@@ -55,9 +57,7 @@ def test_list_pets_empty(auth_client, created_student):
 def test_create_pet(auth_client, created_student, pet_payload):
     student_id = created_student["id"]
 
-    response = auth_client.post(
-        f"/api/students/{student_id}/pets", json=pet_payload()
-    )
+    response = auth_client.post(f"/api/students/{student_id}/pets", json=pet_payload())
 
     assert response.status_code == 201
     body = response.json()
@@ -80,9 +80,7 @@ def test_create_pet_duplicate_name_returns_409(
     student_id = created_student["id"]
     create_pet(auth_client, student_id, pet_payload())
 
-    response = auth_client.post(
-        f"/api/students/{student_id}/pets", json=pet_payload()
-    )
+    response = auth_client.post(f"/api/students/{student_id}/pets", json=pet_payload())
 
     assert response.status_code == 409
     body = response.json()
@@ -106,9 +104,7 @@ def test_list_pets_only_owned_by_student(
     student_a_id = created_student["id"]
     other_response = auth_client.post(
         "/api/students",
-        json=student_payload(
-            name="Beto", username="beto", email="beto@example.com"
-        ),
+        json=student_payload(name="Beto", username="beto", email="beto@example.com"),
     )
     student_b_id = other_response.json()["data"]["id"]
 
@@ -149,9 +145,7 @@ def test_update_pet_from_another_student_returns_404(
     owner_id = created_student["id"]
     other_response = auth_client.post(
         "/api/students",
-        json=student_payload(
-            name="Beto", username="beto", email="beto@example.com"
-        ),
+        json=student_payload(name="Beto", username="beto", email="beto@example.com"),
     )
     other_id = other_response.json()["data"]["id"]
     pet = create_pet(auth_client, owner_id, pet_payload())
@@ -168,9 +162,7 @@ def test_delete_pet(auth_client, db_session, created_student, pet_payload):
     student_id = created_student["id"]
     created = create_pet(auth_client, student_id, pet_payload())
 
-    response = auth_client.delete(
-        f"/api/students/{student_id}/pets/{created['id']}"
-    )
+    response = auth_client.delete(f"/api/students/{student_id}/pets/{created['id']}")
 
     assert response.status_code == 200
     assert response.json()["data"]["id"] == created["id"]
@@ -192,3 +184,89 @@ def test_delete_student_cascades_pets(
         select(PetModel).where(PetModel.studentId == UUID(student_id))
     ).all()
     assert remaining == []
+
+
+def test_create_student_with_nested_pets(
+    auth_client, db_session, student_payload, pet_payload
+):
+    """Verifica que POST /api/students cree un estudiante junto con sus mascotas anidadas."""
+    payload = student_payload(
+        name="Ana Pérez",
+        username="ana_perez",
+        email="ana@example.com",
+        pets=[
+            pet_payload(name="Firulais"),
+            pet_payload(name="Michi", species="gato", age=2),
+        ],
+    )
+
+    response = auth_client.post("/api/students", json=payload)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["code"] == 201
+    assert body["success"] is True
+    assert body["message"] == "Recurso creado"
+
+    student_id = body["data"]["id"]
+    pets_response = auth_client.get(f"/api/students/{student_id}/pets")
+    assert pets_response.status_code == 200
+    pets_data = pets_response.json()["data"]
+    assert pets_data["total"] == 2
+    assert {item["name"] for item in pets_data["items"]} == {"Firulais", "Michi"}
+
+    in_db = db_session.scalars(
+        select(PetModel).where(PetModel.studentId == UUID(student_id))
+    ).all()
+    assert len(in_db) == 2
+
+
+def test_update_pet_duplicate_name_returns_409(
+    auth_client, created_student, pet_payload
+):
+    """Verifica que PATCH retorne 409 si el nuevo nombre ya existe en el mismo estudiante."""
+    student_id = created_student["id"]
+    create_pet(auth_client, student_id, pet_payload(name="Firulais"))
+    other_pet = create_pet(
+        auth_client, student_id, pet_payload(name="Michi", species="gato")
+    )
+
+    response = auth_client.patch(
+        f"/api/students/{student_id}/pets/{other_pet['id']}",
+        json={"name": "Firulais"},
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["success"] is False
+
+
+def test_list_pets_nonexistent_student_returns_404(auth_client):
+    """Verifica que consultar mascotas de un estudiante inexistente devuelva 404."""
+    response = auth_client.get(f"/api/students/{uuid4()}/pets")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["success"] is False
+    assert body["data"] is None
+    assert body["error"] == "Estudiante no encontrado"
+
+
+def test_delete_pet_from_another_student_returns_404(
+    auth_client, db_session, created_student, student_payload, pet_payload
+):
+    """Verifica que eliminar una mascota de otro estudiante devuelva 404 y no la borre."""
+    owner_id = created_student["id"]
+    other_response = auth_client.post(
+        "/api/students",
+        json=student_payload(name="Beto", username="beto", email="beto@example.com"),
+    )
+    other_id = other_response.json()["data"]["id"]
+    pet = create_pet(auth_client, owner_id, pet_payload())
+
+    response = auth_client.delete(f"/api/students/{other_id}/pets/{pet['id']}")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["success"] is False
+    assert db_session.get(PetModel, UUID(pet["id"])) is not None

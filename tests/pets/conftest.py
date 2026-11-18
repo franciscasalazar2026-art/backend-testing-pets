@@ -4,10 +4,14 @@ Los repositorios falsos permiten probar PetsService sin PostgreSQL.
 """
 
 from uuid import UUID, uuid4
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException, status
 
 from app.pets.models import PetModel
+from app.pets.service import PetsService
+from app.shared.database import parse_uuid
 from app.shared.datetimes import utc_now
 from app.students.models import StudentModel
 
@@ -141,3 +145,43 @@ def created_student(auth_client, student_payload) -> dict[str, object]:
     response = auth_client.post("/api/students", json=student_payload())
     assert response.status_code == 201, response.text
     return response.json()["data"]
+
+@pytest.fixture
+def service(
+    monkeypatch,
+    fake_students_repository,
+    fake_pets_repository,
+):
+    db = MagicMock()
+
+    monkeypatch.setattr(
+        "app.pets.service.PetsRepository",
+        lambda db: fake_pets_repository,
+    )
+
+    class FakeStudentsService:
+        def __init__(self, db):
+            self.repository = fake_students_repository
+
+        def get_or_404(self, student_id):
+            parsed = parse_uuid(student_id)
+            student = (
+                self.repository.find_by_id(parsed)
+                if parsed
+                else None
+            )
+
+            if student is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Estudiante no encontrado",
+                )
+
+            return student
+
+    monkeypatch.setattr(
+        "app.pets.service.StudentsService",
+        FakeStudentsService,
+    )
+
+    return PetsService(db)

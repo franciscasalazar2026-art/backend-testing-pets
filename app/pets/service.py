@@ -10,7 +10,6 @@ from app.shared.database import DbSession, parse_uuid
 from app.shared.exceptions import conflict
 from app.students.service import StudentsService
 
-
 class PetsService:
     def __init__(self, db: DbSession) -> None:
         self.db = db
@@ -47,7 +46,7 @@ class PetsService:
         pet = self.find_owned(student_id, pet_id)
         self.assert_no_conflicts(pet.studentId, data, except_id=pet.id)
 
-        for field, value in data.model_dump(exclude_none=True).items():
+        for field, value in data.model_dump(exclude_unset=True).items():
             setattr(pet, field, value)
 
         self.db.commit()
@@ -92,6 +91,5 @@ class PetsService:
             raise conflict(
                 {"name": {"message": "Ya tienes una mascota con ese nombre"}}
             )
-
 
 PetsServiceDep = Annotated[PetsService, Depends()]

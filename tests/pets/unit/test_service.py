@@ -260,3 +260,64 @@ def test_delete_pet_not_found(
     assert error.value.status_code == 404
     assert error.value.detail == "Mascota no encontrada"
     service.db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "pet_id",
+    [str(uuid4()), "id-no-valido"],
+    ids=["inexistente", "uuid-invalido"],
+)
+def test_update_pet_not_found(
+    service, fake_students_repository, make_student_model, pet_id
+):
+    """Verifica que actualizar una mascota inexistente o con UUID inválido dé 404."""
+    student = make_student_model()
+    fake_students_repository.students.append(student)
+
+    with pytest.raises(HTTPException) as error:
+        service.update(str(student.id), pet_id, UpdatePetDto(name="Max"))
+
+    assert error.value.status_code == 404
+    assert error.value.detail == "Mascota no encontrada"
+    service.db.commit.assert_not_called()
+
+
+def test_update_pet_student_not_found_returns_404(service):
+    """Verifica que actualizar mascota de un estudiante inexistente dé 404."""
+    with pytest.raises(HTTPException) as error:
+        service.update(str(uuid4()), str(uuid4()), UpdatePetDto(name="Max"))
+
+    assert error.value.status_code == 404
+    assert error.value.detail == "Estudiante no encontrado"
+    service.db.commit.assert_not_called()
+
+
+def test_delete_pet_student_not_found_returns_404(service):
+    """Verifica que eliminar mascota de un estudiante inexistente dé 404."""
+    with pytest.raises(HTTPException) as error:
+        service.delete(str(uuid4()), str(uuid4()))
+
+    assert error.value.status_code == 404
+    assert error.value.detail == "Estudiante no encontrado"
+    service.db.commit.assert_not_called()
+
+
+def test_update_pet_can_clear_age(
+    service,
+    fake_students_repository,
+    fake_pets_repository,
+    make_student_model,
+    make_pet_model,
+):
+    """Verifica que actualizar age=None limpie la edad registrada."""
+    student = make_student_model()
+    pet = make_pet_model(studentId=student.id, name="Firulais", age=5)
+    fake_students_repository.students.append(student)
+    fake_pets_repository.pets.append(pet)
+
+    result = service.update(
+        str(student.id), str(pet.id), UpdatePetDto(age=None)
+    )
+
+    assert result.age is None
+    service.db.commit.assert_called_once()

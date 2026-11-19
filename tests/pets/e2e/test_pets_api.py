@@ -74,20 +74,36 @@ def test_create_pet(auth_client, created_student, pet_payload):
     assert data["updatedAt"].endswith("Z")
 
 
+@pytest.mark.parametrize(
+    "duplicate_name",
+    ["Firulais", "FIRULAIS"],
+    ids=["mismo-nombre", "distintas-mayusculas"],
+)
 def test_create_pet_duplicate_name_returns_409(
-    auth_client, created_student, pet_payload
+    auth_client, created_student, pet_payload, duplicate_name
 ):
+    """Verifica que el mismo dueño no repita un nombre, incluso cambiando mayúsculas."""
     student_id = created_student["id"]
-    create_pet(auth_client, student_id, pet_payload())
+    created = create_pet(auth_client, student_id, pet_payload())
 
-    response = auth_client.post(f"/api/students/{student_id}/pets", json=pet_payload())
+    response = auth_client.post(
+        f"/api/students/{student_id}/pets",
+        json=pet_payload(name=duplicate_name),
+    )
 
     assert response.status_code == 409
     body = response.json()
     assert body["success"] is False
+    assert "name" in body["errors"]
+
+    listed = auth_client.get(f"/api/students/{student_id}/pets")
+    assert listed.status_code == 200
+    assert listed.json()["data"]["total"] == 1
+    assert listed.json()["data"]["items"][0]["id"] == created["id"]
 
 
-def test_create_pet_invalid_payload_returns_422(auth_client, created_student):
+def test_create_pet_invalid_payload_returns_400(auth_client, created_student):
+    """Verifica el 400 y los errores por campo del handler de validación de la API."""
     student_id = created_student["id"]
 
     response = auth_client.post(
@@ -95,7 +111,12 @@ def test_create_pet_invalid_payload_returns_422(auth_client, created_student):
         json={"name": "", "species": "perro", "age": -2},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == 400
+    assert body["success"] is False
+    assert body["data"] is None
+    assert set(body["errors"]) == {"name", "age"}
 
 
 def test_list_pets_only_owned_by_student(

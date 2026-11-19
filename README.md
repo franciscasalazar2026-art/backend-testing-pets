@@ -1,11 +1,12 @@
 # CRUD Students & Pets (FastAPI)
 
-Proyecto FastAPI que implementa un **CRUD** para la entidad `Student` y sus `Pet`, con **almacenamiento en memoria** a través de repositorios respaldados por diccionarios. Los datos viven mientras el proceso esté corriendo.
+Proyecto FastAPI que implementa un **CRUD** para la entidad `Student` y sus `Pet`, con persistencia en **PostgreSQL**, repositorios SQLAlchemy y migraciones Alembic.
 
 ## Tecnologías
 
 - Python 3.13
-- FastAPI + repositorios en memoria
+- FastAPI + SQLAlchemy + PostgreSQL
+- Alembic para las migraciones y pytest para las pruebas
 - HTML + JS + Tailwind CSS (frontend estático)
 
 ## Resumen funcional
@@ -104,7 +105,7 @@ Si el token es inválido, expiró o ya fue usado, responde `401` con el mensaje 
 
 Si no se envía `pets` (o se envía vacío), el comportamiento es exactamente el mismo de antes.
 
-> **Punto de transacción:** este endpoint realiza varias escrituras (el estudiante y cada mascota). Con un ORM/SQL, todas deben ejecutarse dentro de una transacción: si una mascota falla (por ejemplo, por nombre duplicado), el estudiante y las mascotas anteriores no deben quedar guardados. En esta versión en memoria la implementación es secuencial y **no** hace rollback, a propósito, para que la actividad de ORM/transacciones parta de ese problema.
+> **Punto de transacción:** el estudiante y sus mascotas se insertan dentro de una sola transacción SQLAlchemy. El servicio confirma los cambios con `commit()` al finalizar; si una mascota provoca un conflicto antes de ese paso, el cierre de la sesión revierte las escrituras pendientes. La suite E2E verifica que los nombres duplicados no dejen al estudiante persistido.
 
 ### Modelo de datos
 
@@ -132,7 +133,7 @@ La validación se realiza con Pydantic v2:
 Unicidad (rechazado con `409 Conflict`):
 
 - Estudiante: `email` y `username` deben ser únicos.
-- Mascota: `name` debe ser único dentro de un mismo estudiante.
+- Mascota: `name` debe ser único dentro de un mismo estudiante, sin distinguir mayúsculas y minúsculas (`Firulais` y `FIRULAIS` generan un conflicto).
 
 ## Estándar de respuesta JSON
 
@@ -243,7 +244,7 @@ El cliente estático (`public/`) consume este estándar de forma uniforme:
 ## Contexto técnico
 
 - **Backend**: FastAPI
-- **Persistencia**: en memoria (repositorios respaldados por diccionarios); los datos se pierden al reiniciar
+- **Persistencia**: PostgreSQL mediante SQLAlchemy; esquema gestionado con Alembic
 - **Validación**: Pydantic v2
 - **Autenticación**: sesiones en PostgreSQL; recuperación de contraseña con JWT firmado (PyJWT)
 - **Frontend**: archivos estáticos en `public/` (Alpine.js + Tailwind CSS + vanilla-sonner, vía CDN)
@@ -266,7 +267,13 @@ La recuperación de contraseña se configura con `PASSWORD_RESET_SECRET` y `PASS
     uv sync
     ```
 
-2. Levantar el servidor en modo desarrollo:
+2. Levantar PostgreSQL de desarrollo:
+
+    ```bash
+    docker compose up -d --wait db
+    ```
+
+3. Aplicar las migraciones y levantar el servidor en modo desarrollo:
 
     ```bash
     make dev
@@ -275,6 +282,7 @@ La recuperación de contraseña se configura con `PASSWORD_RESET_SECRET` y `PASS
     O usando uv:
 
     ```bash
+    uv run alembic upgrade head
     uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 3000
     ```
 
@@ -283,14 +291,30 @@ La aplicación queda disponible en:
 - `http://localhost:3000`
 - `http://localhost:3000/docs`
 
-> Al ser un almacenamiento en memoria, los datos se pierden cada vez que se reinicia el servidor (incluido el reload de desarrollo).
+> PostgreSQL de desarrollo usa el volumen `pgdata`: los datos se conservan al reiniciar la API y al ejecutar `docker compose down`. La base de pruebas usa datos temporales independientes.
 
 ## Pruebas
 
-La suite cubre solo la entidad `Student`, con tests unitarios y E2E.
+La suite cubre las entidades `Student` y `Pet`, con tests unitarios y E2E.
 
-- **Unitarios**: validación de schemas y lógica de `StudentsService` con repositorios falsos. No requieren PostgreSQL.
-- **E2E**: API completa con `TestClient`, sesión real y PostgreSQL de prueba.
+| Módulo | Pruebas unitarias | Pruebas E2E |
+| --- | --- | --- |
+| Students | Validación de schemas y reglas de `StudentsService` con repositorios falsos. | CRUD autenticado, validación, conflictos, recursos inexistentes, alta con mascotas, rollback y eliminación en cascada. |
+| Pets | Schemas de entrada y salida (`Pet` y `PetList`), lógica de `PetsService` con repositorios falsos y llamadas de `PetsRepository` con una sesión SQLAlchemy simulada. | CRUD autenticado, listado por estudiante, validación (`400`), nombres duplicados sin distinguir mayúsculas y minúsculas, acceso a mascotas de otro estudiante, alta anidada y eliminación en cascada. |
+
+Los tests unitarios no requieren PostgreSQL. Los E2E usan `TestClient`, una sesión autenticada real y PostgreSQL de prueba; recorren las rutas, dependencias, servicios, repositorios y respuestas de la API.
+
+Los casos de borde del servicio de Pets comprueban los `404` para identificadores inválidos o recursos inexistentes, los conflictos `409` por nombre sin distinguir mayúsculas y minúsculas, y la actualización parcial que permite limpiar la edad con `age=None` sin cambiar los demás campos. Las operaciones rechazadas no deben ejecutar `commit()`.
+
+### Conteo verificado en esta revisión
+
+| Módulo | Unitarios aprobados | E2E aprobados | Total |
+| --- | ---: | ---: | ---: |
+| Students | 55 | 24 | 79 |
+| Pets | 55 | 18 | 73 |
+| **Total** | **110** | **42** | **152** |
+
+Los casos parametrizados cuentan una vez por cada variante ejecutada. Este conteo incluye las pruebas de esta revisión y debe actualizarse al integrar nuevas pruebas.
 
 La base de test es independiente de la de desarrollo:
 
@@ -310,28 +334,39 @@ make test                # suite completa
 make test-down           # baja db-test y elimina sus datos
 ```
 
-También se puede ejecutar directamente:
+También se puede ejecutar directamente, en este orden, desde la raíz del repositorio y con Docker Desktop iniciado:
 
 ```bash
+uv sync
 uv run pytest -m unit
+docker compose -f docker-compose.test.yml up -d --wait
 uv run pytest -m e2e
+```
+
+Con la base de prueba levantada, se puede ejecutar toda la suite y después detener el contenedor:
+
+```bash
 uv run pytest
+docker compose -f docker-compose.test.yml down -v
 ```
 
 Si necesitas apuntar a otra base, define `TEST_DATABASE_URL`. El nombre de la base debe terminar en `_test` para evitar truncar una base de desarrollo por error.
 
 ### Cómo leer los tests
 
-- Cada función de test tiene un docstring que explica qué verifica y qué espera.
+- Los nombres de las funciones indican el comportamiento esperado; algunos casos incluyen un docstring con más detalle.
 - Los casos parametrizados usan `ids` legibles, por ejemplo `vacio`, `corto` o `html`.
 - `tests/conftest.py` documenta las fixtures de base de datos, `TestClient` y sesión autenticada.
-- `tests/students/conftest.py` documenta los repositorios falsos y los datos reutilizables.
+- `tests/students/conftest.py` y `tests/pets/conftest.py` contienen los repositorios falsos y los datos reutilizables de cada módulo.
+- `tests/pets/unit/` agrupa los tests de schemas, servicio y repositorio; `tests/pets/e2e/test_pets_api.py` contiene los escenarios HTTP de mascotas.
 - Los tests unitarios no tocan PostgreSQL. Los E2E usan la base de test y una sesión real.
 
 Para ejecutar un test puntual:
 
 ```bash
 uv run pytest tests/students/unit/test_service.py::test_create_without_pets -v
+uv run pytest tests/pets/unit/test_service.py::test_update_pet_not_found -v
+uv run pytest tests/pets/e2e/test_pets_api.py -v
 ```
 
 ## Comandos útiles

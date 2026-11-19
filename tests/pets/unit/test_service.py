@@ -62,6 +62,21 @@ def test_find_all_for_student_not_found(service):
     assert error.value.detail == "Estudiante no encontrado"
 
 
+@pytest.mark.parametrize(
+    "invalid_student_id",
+    ["no-es-uuid", "12345", ""],
+    ids=["texto", "numeros", "vacio"],
+)
+def test_find_all_for_student_invalid_uuid_returns_404(service, invalid_student_id):
+    """Verifica que un studentId con formato inválido devuelva 404."""
+    with pytest.raises(HTTPException) as error:
+        service.find_all_for_student(invalid_student_id)
+
+    assert error.value.status_code == 404
+    assert error.value.detail == "Estudiante no encontrado"
+    service.db.commit.assert_not_called()
+
+
 def test_create_pet(
     service,
     fake_students_repository,
@@ -109,6 +124,29 @@ def test_create_pet_duplicate_name_same_student(
 
     assert error.value.status_code == 409
     assert "name" in error.value.detail["errors"]
+    service.db.commit.assert_not_called()
+
+
+def test_create_pet_case_insensitive_duplicate_name(
+    service,
+    fake_students_repository,
+    fake_pets_repository,
+    make_student_model,
+    make_pet_model,
+    pet_payload,
+):
+    """Verifica que nombres iguales con distinta capitalización también den 409."""
+    student = make_student_model()
+    fake_students_repository.students.append(student)
+    pet = make_pet_model(studentId=student.id, name="Firulais")
+    fake_pets_repository.pets.append(pet)
+
+    with pytest.raises(HTTPException) as error:
+        service.create(str(student.id), CreatePetDto(**pet_payload(name="FIRULAIS")))
+
+    assert error.value.status_code == 409
+    assert "name" in error.value.detail["errors"]
+    assert fake_pets_repository.pets == [pet]
     service.db.commit.assert_not_called()
 
 
@@ -194,9 +232,7 @@ def test_update_pet_duplicate_name_conflict(
     fake_pets_repository.pets.extend([pet_1, pet_2])
 
     with pytest.raises(HTTPException) as error:
-        service.update(
-            str(student.id), str(pet_2.id), UpdatePetDto(name="Firulais")
-        )
+        service.update(str(student.id), str(pet_2.id), UpdatePetDto(name="Firulais"))
 
     assert error.value.status_code == 409
     assert "name" in error.value.detail["errors"]
@@ -302,7 +338,7 @@ def test_delete_pet_student_not_found_returns_404(service):
     service.db.commit.assert_not_called()
 
 
-def test_update_pet_can_clear_age(
+def test_update_pet_can_clear_age_to_none(
     service,
     fake_students_repository,
     fake_pets_repository,
@@ -315,9 +351,8 @@ def test_update_pet_can_clear_age(
     fake_students_repository.students.append(student)
     fake_pets_repository.pets.append(pet)
 
-    result = service.update(
-        str(student.id), str(pet.id), UpdatePetDto(age=None)
-    )
+    result = service.update(str(student.id), str(pet.id), UpdatePetDto(age=None))
 
     assert result.age is None
+    assert result.name == "Firulais"
     service.db.commit.assert_called_once()

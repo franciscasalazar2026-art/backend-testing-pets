@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.pets.models import PetModel
@@ -23,7 +23,8 @@ class PetsRepository:
 
     def find_by_student_and_name(self, student_id: UUID, name: str) -> PetModel | None:
         query = select(PetModel).where(
-            PetModel.studentId == student_id, PetModel.name == name
+            PetModel.studentId == student_id,
+            func.lower(PetModel.name) == func.lower(name),
         )
         return self.db.scalar(query)
 

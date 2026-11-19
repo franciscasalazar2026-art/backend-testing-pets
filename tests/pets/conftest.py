@@ -1,10 +1,10 @@
-﻿"""Dobles de prueba y datos reutilizables para los tests de Pets.
+"""Dobles de prueba y datos reutilizables para los tests de Pets.
 
 Los repositorios falsos permiten probar PetsService sin PostgreSQL.
 """
 
-from uuid import UUID, uuid4
 from unittest.mock import MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException, status
@@ -46,7 +46,7 @@ class FakePetsRepository:
             (
                 pet
                 for pet in self.pets
-                if pet.studentId == student_id and pet.name == name
+                if pet.studentId == student_id and pet.name.lower() == name.lower()
             ),
             None,
         )
@@ -146,6 +146,7 @@ def created_student(auth_client, student_payload) -> dict[str, object]:
     assert response.status_code == 201, response.text
     return response.json()["data"]
 
+
 @pytest.fixture
 def service(
     monkeypatch,
@@ -165,11 +166,7 @@ def service(
 
         def get_or_404(self, student_id):
             parsed = parse_uuid(student_id)
-            student = (
-                self.repository.find_by_id(parsed)
-                if parsed
-                else None
-            )
+            student = self.repository.find_by_id(parsed) if parsed else None
 
             if student is None:
                 raise HTTPException(
